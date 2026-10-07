@@ -7,164 +7,243 @@ namespace deadlockShit;
 
 public class DeadLockedPlugin : DeadworksPluginBase
 {
-	public override string Name => "Deadlocked";
+    public override string Name => "Deadlocked";
 
-	// add bot state variables to this class
-	private sealed class BotState {
-		public HashSet<uint> enemyHeroesNearby = new();
-	}
+    // add bot state variables to this class
+    private sealed class BotState
+    {
+        public HashSet<uint> enemyHeroesNearby = new();
+    }
 
-	private readonly HashSet<uint> _botHandles = new();
-	private readonly EntityData<BotState> _botStates = new();
+    private readonly HashSet<uint> _botHandles = new();
+    private readonly EntityData<BotState> _botStates = new();
 
-	private IHandle? _botThinkTimer;
+    private uint? _humanHandle;
+    private IHandle? _botThinkTimer;
 
-	// put required schema acessors here
-	private static readonly SchemaAccessor<uint> _enemyAimTarget = new("CCitadelPlayerPawn"u8, "m_hEnemyPlayerAimTarget"u8);
-	private static readonly SchemaAccessor<uint> _guardianTarget = new("CAI_CitadelNPC"u8, "m_hLookTarget"u8);
+    private float _nextAimLogTime;
+    private int _cmdAimLogs;
 
-	// put "throways" here
-	private static Random rngGen = new Random();
+    // put required schema acessors here
+    private static readonly SchemaAccessor<Vector3> _eyeAngles = new("CCitadelPlayerPawn"u8, "m_angEyeAngles"u8);
 
-	public override void OnLoad(bool isReload)
-	{
-		Console.WriteLine($"Deadlocked loaded (reload={isReload}");
-		Server.ExecuteCommand("sv_cheats 1");
-		Server.ExecuteCommand("citadel_allow_purchasing_anywhere 1");
+    // put "throways" here
+    private static Random rngGen = new Random();
 
-		_botHandles.Clear();
+    public override void OnLoad(bool isReload)
+    {
+        Console.WriteLine($"Deadlocked loaded (reload={isReload}");
+        Server.ExecuteCommand("sv_cheats 1");
+        Server.ExecuteCommand("citadel_allow_purchasing_anywhere 1");
 
-		_botThinkTimer = Timer.Every(1.Ticks(), OnBotThink);
-	}
+        _botHandles.Clear();
+        _humanHandle = null;
 
-	public override void OnStartupServer() {
-		_botHandles.Clear();
-	}
+        _botThinkTimer = Timer.Every(1.Ticks(), OnBotThink);
+    }
 
-	public override void OnUnload()
-	{
-		Server.ExecuteCommand("trooper_kill_all");
-		Server.ExecuteCommand("bot_kick_all");
-		_botHandles.Clear();
-		_botThinkTimer?.Cancel();
-	}
+    public override void OnStartupServer()
+    {
+        _botHandles.Clear();
+        _humanHandle = null;
+    }
 
-	[GameEventHandler("player_hero_changed")]
-	public HookResult OnPlayerHeroChanged(PlayerHeroChangedEvent args)
-	{
-		var pawn = args.Userid?.As<CCitadelPlayerPawn>();
+    public override void OnUnload()
+    {
+        Server.ExecuteCommand("trooper_kill_all");
+        Server.ExecuteCommand("bot_kick_all");
+        _botHandles.Clear();
+        _humanHandle = null;
+        _botThinkTimer?.Cancel();
+    }
 
-		Console.WriteLine($"new player {pawn?.Name}");
+    [GameEventHandler("player_hero_changed")]
+    public HookResult OnPlayerHeroChanged(PlayerHeroChangedEvent args)
+    {
+        var pawn = args.Userid?.As<CCitadelPlayerPawn>();
 
-		if (pawn?.Controller?.PlayerSteamId == 0) {
-			_botHandles.Add(pawn.EntityHandle);
-			Console.WriteLine($"Found bot with handle: {pawn.EntityHandle}");
+        Console.WriteLine($"new player {pawn?.Name}");
 
-			var msg = new CCitadelUserMsg_HudGameAnnouncement
-			{
-				TitleLocstring = "BOT FOUND",
-				DescriptionLocstring = $"Found bot named {pawn.Name}"
-			};
+        if (pawn?.Controller?.PlayerSteamId == 0)
+        {
+            _botHandles.Add(pawn.EntityHandle);
+            Console.WriteLine($"Found bot with handle: {pawn.EntityHandle}");
 
-			NetMessages.Send(msg, RecipientFilter.All);
+            var msg = new CCitadelUserMsg_HudGameAnnouncement
+            {
+                TitleLocstring = "BOT FOUND",
+                DescriptionLocstring = $"Found bot named {pawn.Name}"
+            };
 
-			foreach (var ability in pawn.AbilityComponent.Abilities) {
-				if (ability.AbilitySlot < EAbilitySlot.Signature1
-				 || ability.AbilitySlot > EAbilitySlot.Signature4) continue;
+            NetMessages.Send(msg, RecipientFilter.All);
 
-				ability.UpgradeBits = ability.UpgradeBits | 0b11111;
+            foreach (var ability in pawn.AbilityComponent.Abilities)
+            {
+                if (ability.AbilitySlot < EAbilitySlot.Signature1
+                 || ability.AbilitySlot > EAbilitySlot.Signature4) continue;
 
-				// disable ultimates/guns from bots for testing
-				if (ability.AbilitySlot == EAbilitySlot.Signature4)
-					ability.CooldownEnd = GlobalVars.CurTime + 999;
-			}
-		}
+                ability.UpgradeBits = ability.UpgradeBits | 0b11111;
 
-		return HookResult.Continue;
-	}
+                // disable ultimates/guns from bots for testing
+                if (ability.AbilitySlot == EAbilitySlot.Signature4)
+                    ability.CooldownEnd = GlobalVars.CurTime + 999;
+            }
+        }
+        else if (pawn != null && pawn.IsValid)
+        {
+            _humanHandle = pawn.EntityHandle;
+            Console.WriteLine($"Found human {pawn.Name} handle {pawn.EntityHandle}");
+        }
 
-	[Command("hi", Description = "Debug message")]
-	public void CMD_Hi(CCitadelPlayerController caller)
-	{
-		var msg = new CCitadelUserMsg_HudGameAnnouncement {
-			TitleLocstring = "HI",
-			DescriptionLocstring = "Yes, the plugin is working."
-		};
+        return HookResult.Continue;
+    }
 
-		NetMessages.Send(msg, RecipientFilter.Single(caller.EntityIndex - 1));
-	}
+    [Command("hi", Description = "Debug message")]
+    public void CMD_Hi(CCitadelPlayerController caller)
+    {
+        var msg = new CCitadelUserMsg_HudGameAnnouncement
+        {
+            TitleLocstring = "HI",
+            DescriptionLocstring = "Yes, the plugin is working."
+        };
 
-	[Command("sethp", Description = "Sets HP to percentage for testing")]
-	public void CMD_king(CCitadelPlayerController caller, int percentage) {
-		var pawn = caller.GetHeroPawn();
+        NetMessages.Send(msg, RecipientFilter.Single(caller.EntityIndex - 1));
+    }
 
-		if (pawn == null || !pawn.IsValid || percentage <= 0 || percentage > 100)
-			return;
+    [Command("sethp", Description = "Sets HP to percentage for testing")]
+    public void CMD_king(CCitadelPlayerController caller, int percentage)
+    {
+        var pawn = caller.GetHeroPawn();
 
-		var target = (int)pawn.GetMaxHealth() * percentage / 100;
-		var delta = target - pawn.Health;
+        if (pawn == null || !pawn.IsValid || percentage <= 0 || percentage > 100)
+            return;
 
-		Console.WriteLine($"{target} for {pawn.Name}");
+        var target = (int)pawn.GetMaxHealth() * percentage / 100;
+        var delta = target - pawn.Health;
 
-		if (delta > 0)
-			pawn.Heal(delta);
-		else
-			pawn.Hurt(-delta);
-	}
+        Console.WriteLine($"{target} for {pawn.Name}");
 
-	[GameEventHandler("player_hurt")]
-	public HookResult OnPlayerHurt(PlayerHurtEvent args) {
-		var victim = args.UseridPawn?.As<CCitadelPlayerPawn>();
-		var attacker = args.AttackerPawn?.As<CCitadelPlayerPawn>();
+        if (delta > 0)
+            pawn.Heal(delta);
+        else
+            pawn.Hurt(-delta);
+    }
 
-		if (victim == null || !victim.IsValid || _botHandles.Contains(victim.EntityHandle))
-			return HookResult.Continue;
+    [GameEventHandler("player_hurt")]
+    public HookResult OnPlayerHurt(PlayerHurtEvent args)
+    {
+        var victim = args.UseridPawn?.As<CCitadelPlayerPawn>();
+        var attacker = args.AttackerPawn?.As<CCitadelPlayerPawn>();
 
-		victim.Controller?.Heal(args.DmgHealth);
+        if (victim == null || !victim.IsValid || _botHandles.Contains(victim.EntityHandle))
+            return HookResult.Continue;
 
-		return HookResult.Continue;
-	}
+        victim.Controller?.Heal(args.DmgHealth);
 
-	private void OnBotThink()
-	{
-		foreach (var handle in _botHandles.ToArray())
-		{
-			var pawn = CBaseEntity.FromHandle<CCitadelPlayerPawn>(handle);
+        return HookResult.Continue;
+    }
 
-			if (pawn == null || !pawn.IsValid)
-			{
-				Console.WriteLine($"removed invalid bot {pawn?.Name}");
-				_botHandles.Remove(handle);
-				continue;
-			}
+    private void OnBotThink()
+    {
+        foreach (var handle in _botHandles.ToArray())
+        {
+            var pawn = CBaseEntity.FromHandle<CCitadelPlayerPawn>(handle);
 
-			var state = _botStates.GetOrAdd(pawn, () => new BotState());
-		}
-	}
+            if (pawn == null || !pawn.IsValid)
+            {
+                Console.WriteLine($"removed invalid bot {pawn?.Name}");
+                _botHandles.Remove(handle);
+                continue;
+            }
 
-	[GameEventHandler("player_death")]
-	public HookResult OnPlayerDeath(PlayerDeathEvent args)
-	{
-		var victim = args.UseridPawn?.As<CCitadelPlayerPawn>();
-		var killer = args.AttackerPawn?.As<CCitadelPlayerPawn>();
+            _botStates.GetOrAdd(pawn, () => new BotState());
+        }
 
-		if (victim == null || !victim.IsValid || killer == null || !killer.IsValid)
-			return HookResult.Continue;
+        if (_cmdAimLogs == 0 && CurrentHuman() != null && _botHandles.Count > 0 && GlobalVars.CurTime >= _nextAimLogTime)
+        {
+            Console.WriteLine("aim: no bot usercmds seen yet");
+            _nextAimLogTime = GlobalVars.CurTime + 1f;
+        }
+    }
 
-		if (_botHandles.Contains(victim.EntityHandle))
-			OnBotDeath(victim.EntityHandle, killer.EntityHandle);
+    public override void OnProcessUsercmds(ProcessUsercmdsEvent args)
+    {
+        var pawn = args.Controller?.GetHeroPawn();
+        if (pawn == null || !pawn.IsValid || !_botHandles.Contains(pawn.EntityHandle))
+            return;
 
-		return HookResult.Continue;
-	}
+        var human = CurrentHuman();
+        if (human == null)
+            return;
 
-	private void OnBotDeath(uint killed_handle, uint killer_handle) {
-		var debug = false;
-		var victim = CBaseEntity.FromHandle<CCitadelPlayerPawn>(killed_handle);
-		var killer = CBaseEntity.FromHandle<CCitadelPlayerPawn>(killer_handle);
+        var aim = AimAt(pawn.EyePosition, human.EyePosition);
+        var angles = new CMsgQAngle { X = aim.X, Y = aim.Y, Z = 0f };
+        float inYaw = 0f;
 
-		if (debug || victim == null || !victim.IsValid || victim.Controller == null || killer == null || !killer.IsValid || killer.Controller == null)
-			return;
+        foreach (var cmd in args.Usercmds)
+        {
+            cmd.Base ??= new CBaseUserCmdPB();
+            inYaw = cmd.Base.Viewangles?.Y ?? inYaw;
+            cmd.Base.Viewangles = angles;
+            foreach (var step in cmd.Base.SubtickMoves)
+            {
+                step.PitchDelta = 0f;
+                step.YawDelta = 0f;
+            }
+        }
 
-		Console.WriteLine($"OnBotDeath called for {victim.Name}");
-	}
+        if (GlobalVars.CurTime < _nextAimLogTime)
+            return;
+
+        var distance = Vector3.Distance(pawn.Position, human.Position);
+        var eye = _eyeAngles.Get(pawn.Handle);
+        Console.WriteLine($"cmd aim {pawn.Name} slot={args.PlayerSlot} cmds={args.Usercmds.Count} dist={distance:F0} inYaw={inYaw:F1} outYaw={aim.Y:F1} eye={eye.Y:F1}");
+        _cmdAimLogs++;
+        _nextAimLogTime = GlobalVars.CurTime + 1f;
+    }
+
+    private CCitadelPlayerPawn? CurrentHuman()
+    {
+        if (_humanHandle is not uint humanHandle)
+            return null;
+        var human = CBaseEntity.FromHandle<CCitadelPlayerPawn>(humanHandle);
+        return human != null && human.IsValid ? human : null;
+    }
+
+    private static Vector3 AimAt(Vector3 from, Vector3 to)
+    {
+        var delta = to - from;
+        float horiz = MathF.Sqrt(delta.X * delta.X + delta.Y * delta.Y);
+        return new Vector3(
+            -MathF.Atan2(delta.Z, horiz) * (180f / MathF.PI),
+            MathF.Atan2(delta.Y, delta.X) * (180f / MathF.PI),
+            0f);
+    }
+
+    [GameEventHandler("player_death")]
+    public HookResult OnPlayerDeath(PlayerDeathEvent args)
+    {
+        var victim = args.UseridPawn?.As<CCitadelPlayerPawn>();
+        var killer = args.AttackerPawn?.As<CCitadelPlayerPawn>();
+
+        if (victim == null || !victim.IsValid || killer == null || !killer.IsValid)
+            return HookResult.Continue;
+
+        if (_botHandles.Contains(victim.EntityHandle))
+            OnBotDeath(victim.EntityHandle, killer.EntityHandle);
+
+        return HookResult.Continue;
+    }
+
+    private void OnBotDeath(uint killed_handle, uint killer_handle)
+    {
+        var debug = false;
+        var victim = CBaseEntity.FromHandle<CCitadelPlayerPawn>(killed_handle);
+        var killer = CBaseEntity.FromHandle<CCitadelPlayerPawn>(killer_handle);
+
+        if (debug || victim == null || !victim.IsValid || victim.Controller == null || killer == null || !killer.IsValid || killer.Controller == null)
+            return;
+
+        Console.WriteLine($"OnBotDeath called for {victim.Name}");
+    }
 }
