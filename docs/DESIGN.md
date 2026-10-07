@@ -1,8 +1,49 @@
+# Strafe in place
+
+Status: command strafe failed. Next attempt is `Teleport(velocity:)`.
+
+`leftmove` and button bits did not move the bot. Aim on the user command still works. Each tick sets a sideways velocity of 250, flipped every second, relative to the bot's eye yaw. Position is not set. No nav.
+
+Pass: the bot slides left, then right. Fail: it stays put. Log is `strafe` with `dir`.
+
+
 # Aim all bots at the one human
 
 Status: working. Tested 2026-10-06 with several bots, enemy and friendly. They looked at the human.
 
 Aim is set in `OnProcessUsercmds` by writing `base.viewangles` and zeroing subtick pitch/yaw deltas. Schema angle writes do not stick and are not used.
+
+# Move bots to a crouch spot
+
+Status: first walk failed. Yaw at the spot made them look there, and `forwardmove` 450 did not move them. Next attempt keeps aim on the human and puts the spot into forward and left relative to that yaw.
+
+## Goal
+
+When the one human crouches, every registered bot walks to that spot using a user command. Crouch again to send them to the new spot. No navigator write, no jump or slide.
+
+## Detect the crouch
+
+Do not guess a duck button bit. On the human, watch `CCitadelPlayerPawn.m_flCrouchFraction` (`0x218C`). A rising edge from below `0.2` to `0.5` or more stores `human.Position` in a `Vector3? _moveTarget` and logs the spot. Holding crouch must not refresh the spot every tick. `m_flLastDuckTime` (`0x1E7C`) changing is the backup if the fraction never rises.
+
+## Drive it
+
+In the existing bot branch of `OnProcessUsercmds`, if `_moveTarget` is set:
+
+1. Horizontal distance from `bot.Position` to the spot. Ignore height.
+2. At `80` units or less, set `forwardmove` and `leftmove` to `0` and log `arrived`. Leave aim on the human.
+3. Otherwise set yaw to the spot, keep the current pitch aimed at the human, set `leftmove` to `0`, and set `forwardmove` to `450`. Zero subtick `analog_forward_delta` and `analog_left_delta` as well as pitch and yaw deltas.
+4. Once a second log bot name, distance, and the forward value written.
+
+`450` is a starting speed, not a known Deadlock constant. If they do not walk, the log still shows the write and the next try is a larger value.
+
+## Out of scope
+
+Path reading, obstacles, jump, slide, crouch-while-moving, and more than one human.
+
+## How to test
+
+Reload, crouch once in the open, and stay still. Expect one `move target` log, then `move` lines whose distance falls, then `arrived`. Crouch somewhere else and the target should change. Not tested.
+
 
 ## What failed
 
