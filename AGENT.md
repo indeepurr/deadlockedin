@@ -58,6 +58,6 @@ Deadworks plugin that changes the behavior of the current implementation of bots
 ## Environment
 
 - Windows 11
-- Deadlock 10-06-26 (Baba Update)
-- Deadworks 0.5.4
+- Deadlock 10-29-26 (Nurse Harrow Update)
+- Deadworks 0.6.3
 - C#
